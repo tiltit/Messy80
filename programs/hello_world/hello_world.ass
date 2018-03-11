@@ -1,5 +1,5 @@
 ; ---------------------------------------------------------------------;
-; Outputs the Hex value of any byte received by the uart               ;
+; Print out Hello World!!!                                             ;
 ; ---------------------------------------------------------------------;
 ; -s -l 10 /home/oliver/workspace/z80/messy80/programs/hello_world/hello_world.txt
 
@@ -15,7 +15,6 @@ hello_world:
 	call print_string
 	call new_line
 
-_ram_prg_test_end:
 
 	ret
 
