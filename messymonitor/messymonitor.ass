@@ -1,0 +1,750 @@
+; ---------------------------------------------------------------------;
+; Messy80 Z80 single board computer monitor.                           ;
+; ---------------------------------------------------------------------;
+; Picocom serial config
+; picocom -b 38400 -f h --omap crcrlf --send-cmd "ascii-xfr" /dev/ttyACM0
+
+STACK_BASE			equ		$FFFF
+
+;#include "uart_reg.ass"
+
+
+
+#target     rom                 ; declare target file format
+
+#data   $8000,$200
+
+; Interupt jump table
+int_7				data	2	; 0
+int_6				data	2	; 2
+int_5				data	2	; 4
+int_4				data	2	; 6
+int_3				data	2	; 8
+int_2				data	2	; 10
+int_1				data	2	; 12
+int_0				data	2	; 14
+
+; Vars
+command_line			data	80
+command_line_ptr		data	2
+split_a				data	80
+split_b				data	80
+string_a			data	80
+
+
+#code		0,$2000				; start up code before nmi code segment
+	di	
+							; disable interupts
+	ld ix, STACK_BASE
+	ld sp,ix					; set up stack pointer
+	
+	; Set up interupt vector
+	IM 2						; Interupt mode 2
+	ld A,80H
+	ld I,A						; Set high byte of interupt mode 2 address to 82
+	
+	; Set up the interupt vector in ram
+	ld HL,ISR_7
+	ld (int_7),HL
+	ld HL,ISR_6
+	ld (int_6),HL
+	ld HL,ISR_5
+	ld (int_5),HL
+	ld HL,ISR_4
+	ld (int_4),HL
+	ld HL,ISR_3
+	ld (int_3),HL
+	ld HL,ISR_2
+	ld (int_2),HL
+	ld HL,ISR_1
+	ld (int_1),HL
+	ld HL,int_byte_ready
+	ld (int_0),HL
+				; 
+
+	call setup_uart
+
+	ld A,00001010b				;
+	out (UART_MCR),A			; Set RTS low, turn one led off
+	
+	ei					; Enable interupts
+	
+main:
+	; Clear screen
+	
+	;Moove cursor upper left corner
+	ld HL, str_term_reset_cursor
+	call send_ansi_code
+
+	; Clear entire screen
+	ld HL, str_term_clear_screen		; [2J
+	call send_ansi_code
+
+	; Set the terminal color to black on white
+	ld HL,str_term_color_BW
+	call send_ansi_code
+
+	; Print out the welcome string
+	ld hl, str_wellcome_1
+	call print_line
+
+	; Set the term color back to default
+	ld HL,str_term_color_default
+	call send_ansi_code
+
+	ld hl, str_wellcome_2
+	call print_line
+
+	ld HL, command_line;
+	ld (command_line_ptr), HL		;  setup the command line pointer
+	call print_command_prompt
+	
+
+_main_loop:
+	in A,(UART_LINE_STATUS)
+	bit UART_LINE_STATUS_RX_READY,A		; Test UART_RX_READY the see if there is any data available in the fifo
+	jp Z,_main_loop_end			; If not got to no_new_bytes
+
+
+	
+_get_new_char:
+	ld HL,(command_line_ptr)		; Get the current position of the commmand line pointer
+	in A,(UART_RX_BUFF)			; get the byte
+	
+	cp $0D					; Compare a to \r
+	jr Z, _char_is_cr
+	cp $0A					; Compare a to \n
+	jr Z, _char_is_lf
+	cp $7F					; Compare a to backspace
+	jr Z, _char_is_backspace
+	cp $1B					; Compare to Escape
+	jr Z, _char_is_escape
+
+	call print_char				; Print out the typed character
+
+
+_char_is_other:
+	ld (HL),A
+	inc HL
+	ld (command_line_ptr),HL
+	jp _main_loop_end
+
+_char_is_backspace:
+	; Send back -> space -> back
+	ld HL,(command_line_ptr)		; Get the current position of the commmand line pointer
+	ld BC,command_line
+	or A					; reset c flag
+	sbc HL,BC
+
+	jp Z,_main_loop_end			; If cursor is the start of the command line goto end
+
+	ld HL,str_term_backpace_sequence	; Point HL to the backscpace sequence
+	call print_string			; Print the sequence
+
+	ld HL,(command_line_ptr)		; Get the current position of the commmand line pointer
+	dec HL					; Decrease HL (pointer to the comand line)
+	ld (command_line_ptr), HL
+
+	jp _main_loop_end
+
+_char_is_escape:
+	; Do nothing for now
+	; Will have to decode the diferent escape sequences used for input into the console.
+	; For example F1 -> F 12, insert home right left up down keys etc..
+	; That will not be any fun.
+	jp _main_loop_end
+	
+_char_is_cr:
+	dec HL
+	ld A,(HL)
+	add A,$80				; Last char in string
+	ld (HL),A
+	jp _main_loop_end
+
+_char_is_lf:
+	ld HL, command_line
+	ld A,(HL)
+	cp $80
+	jr NZ,_command_line_not_empty		; If the firts byte is $80 we are dealing with a return with no command
+	call new_line
+	jp _reset_comand_line
+
+_command_line_not_empty:
+	call new_line				; New line after the user has entered a command
+	ld HL, command_line
+	ld (command_line_ptr), HL		; Reset the command line pointer
+
+	;in A, (UART_MCR)			; UART Flow controll Stop accepting input
+	;res UART_MCR_RTS, A
+	;out (UART_MCR),A			
+
+	call proccess_command
+
+	;in A, (UART_MCR)			; UART Flow controll Accept input
+	;set UART_MCR_RTS, A
+	;out (UART_MCR),A
+
+_reset_comand_line:
+ 	ld HL, command_line;
+ 	ld (command_line_ptr), HL		;  reset the command line pointer
+ 	ld (HL),$80				;  Empty the command string
+	ld A,'#'				; new command line
+	call print_char
+	
+_main_loop_end:
+	jp _main_loop
+
+; -------------------------------------------------------------------- ;
+;                             Subroutines                              ;
+; -------------------------------------------------------------------- ;
+
+; -------------------------------------------
+; proccess_command
+; proccesses a command from string pointed 
+; to by HL
+; -------------------------------------------
+proccess_command:
+	ld HL,command_line
+	
+	; Split the string into 2
+	; HL contains the command
+	ld IX, split_a
+	ld IY, split_b
+	ld B,' '				; space is the delimiter
+	call split_in_two
+_case_h:
+	ld IX, command_line
+	ld IY, cmd_help
+	call string_compare
+	jr NZ,	_case_h2c8
+	call command_help
+	jp _proccess_command_end
+
+_case_h2c8:					; Check if command is h2b8 (hex to char)
+	ld IX, split_a
+	ld IY, cmd_hex2char_8
+	call string_compare
+	jr NZ,	_case_h2c16
+	ld HL, split_b
+	call command_hex_to_char_8
+	jp _proccess_command_end
+	
+_case_h2c16:					; Check if command is h2b16 (hex to char 16)
+	ld IX, split_a
+	ld IY, cmd_hex2char_16
+	call string_compare
+	jr NZ, _case_ra
+	ld HL, split_b
+	call command_hex_to_char_16
+	jp _proccess_command_end
+
+_case_ra:					; Check if command is ra (read address)
+	ld IX, split_a
+	ld IY, cmd_read_address
+	call string_compare
+	jr NZ, _case_wa
+	ld HL, split_b
+	call command_read_address
+	jp _proccess_command_end
+
+_case_wa:					; Check if command is wa (write address)
+	ld IX, split_a
+	ld IY, cmd_write_address
+	call string_compare
+	jr NZ, _case_rio
+	ld HL, split_b
+	call command_write_address
+	jp _proccess_command_end
+
+_case_rio:					; Check if command is rio (read io)
+	ld IX, split_a
+	ld IY, cmd_io_in
+	call string_compare
+	jr NZ, _case_wio
+	ld HL, split_b
+	call command_read_io
+	jp _proccess_command_end
+
+_case_wio:					; Check if command is wio (write io)
+	ld IX, split_a
+	ld IY, cmd_io_out
+	call string_compare
+	jr NZ, _case_ca
+	ld HL, split_b
+	call command_write_io
+	jp _proccess_command_end
+
+_case_ca:					; Check if command is ca (call address)
+	ld IX, split_a
+	ld IY, cmd_call_address
+	call string_compare
+	jr NZ, _case_b2h
+	ld HL, split_b
+	call command_call_address
+	jp _proccess_command_end
+_case_b2h:
+	ld IX, split_a
+	ld IY, cmd_bin2hex
+	call string_compare
+	jr NZ, _case_clear
+	ld HL, split_b
+	call command_bin_to_hex
+	jp _proccess_command_end
+_case_clear:					; Clear Screen
+	ld IX, command_line
+	ld IY, cmd_clear
+	call string_compare
+	jr NZ,	_case_default
+	call clear_screen
+	jp _proccess_command_end
+
+_case_default:					; No command found
+	ld HL, str_error_unknown_cmd
+	call print_line
+		
+_proccess_command_end:
+
+	ret
+
+; ---------------------------------------------
+; command help
+; ---------------------------------------------
+command_help:
+	
+	call new_line
+
+	ld A,1BH				; ESC
+	call print_char
+	ld HL,str_term_underline
+	call print_string
+
+	ld HL,str_help_1
+	call print_line
+	
+	ld A,1BH				; ESC
+	call print_char
+	ld HL,str_term_underline_off
+	call print_string
+
+	call new_line
+	ld HL,str_help_2
+	call print_line
+
+	ld HL,str_help_4			; Horizontal line
+	call print_line
+
+	ld HL,str_help_3
+	call print_line
+	ld HL,str_help_4
+	call print_line
+	ld HL,str_help_5
+	call print_line
+	ld HL,str_help_6
+	call print_line
+	ld HL,str_help_7
+	call print_line
+	ld HL,str_help_8
+	call print_line
+	ld HL,str_help_9
+	call print_line
+	ld HL,str_help_10
+	call print_line
+	ld HL,str_help_11
+	call print_line
+
+
+	ld HL,str_help_4
+	call print_line
+	call new_line
+	ret
+
+; ---------------------------------------------
+; command_call_address
+; ---------------------------------------------
+command_call_address:
+	call hex_to_bin_16
+	ld HL, _command_call_address_return
+	push HL
+	ld HL, DE
+	jp (HL)
+_command_call_address_return:
+	ld HL, str_success
+	call print_line
+	ret
+
+; ---------------------------------------------
+; command_write_io
+; input: HL argument string
+; command ex: io_out 40,FF
+; ---------------------------------------------
+command_write_io:
+	ld DE, string_a
+	call string_copy
+	
+	ld HL, string_a
+	ld IX, split_a
+	ld IY, split_b
+	ld B, ','				; This is the delimiter
+	call split_in_two			; Split string in two
+	
+	ld HL, split_a
+	call hex_to_bin_8
+	ld C,A
+	push BC
+	ld HL, split_b
+	call hex_to_bin_8
+	pop BC
+	out (C),A				; Write byte to address
+	ret
+
+; ---------------------------------------------
+; command_read_io
+; input: HL argument string
+; command ex: rio 40
+; ---------------------------------------------
+command_read_io:
+	call hex_to_bin_8
+	ld C, A
+	in A, (C)
+	ld C, A
+	call bin_to_hex_8
+	ld A,H
+	call print_char
+	ld A,L
+	call print_char
+	call new_line
+	ret
+
+; ---------------------------------------------
+; command_write_address
+; input: HL contains the command argument
+; ---------------------------------------------
+command_write_address:
+	ld DE, string_a
+	call string_copy
+	
+	ld HL, string_a
+	ld IX, split_a
+	ld IY, split_b
+	ld B, ','				; This is the delimiter
+	call split_in_two
+	ld HL, split_a
+	call hex_to_bin_16			; Output is DE
+	push DE					; Save result for later
+	ld HL, split_b
+	call hex_to_bin_8
+	pop HL					; Reload result
+	; LD HL, DE
+	ld (HL),A				; Write byte to address
+	ret
+
+; ---------------------------------------------
+; command_read_address
+; input: HL contains the command argument
+; ---------------------------------------------
+command_read_address:
+	call hex_to_bin_16
+	ld HL, DE
+	;ld A,(HL)
+	;call print_char
+	ld C,(HL)
+	call bin_to_hex_8
+	ld A,H
+	call print_char
+	ld A,L
+	call print_char
+	call new_line
+	ret
+
+; ---------------------------------------------
+; command_hex_to_char_8
+; converts a 2 byte hex string into a char
+; ex: h2c8 40 
+; input: HL contains the command argument
+; ---------------------------------------------
+command_hex_to_char_8:
+	ld HL, split_b				; This is where the hex string is
+	call hex_to_bin_8
+	call print_char
+	call new_line
+	ret
+; ---------------------------------------------
+; command_hex_to_char_16
+; input: HL contains the command argument
+; ---------------------------------------------
+command_hex_to_char_16:
+	ld HL, split_b				; This is where the hex string is
+	call hex_to_bin_16
+	ld A, D
+	call print_char
+	ld A, E
+	call print_char
+	call new_line
+	ret
+
+; ---------------------------------------------
+; command_bin_to_hex
+; input: HL contains the command argument
+; ex input:  0000100
+; ex output: 04H
+; ---------------------------------------------
+command_bin_to_hex:
+	ld HL,split_b
+
+	;call string_len			; Get the length of the string in A
+
+	;ld A,(HL)				; Load the last byte of the string into A
+	;res 7,A				; Reset bit 7 of A ( string end )
+	;ld D,80H				; Load 80H into D
+	ld E,0					; Load 0 into E
+
+	;ld A,(HL)				; Load the first byte of the string into A
+_command_bin_to_hex_loop:
+	ld A,(HL)
+	res 7,A
+	cp '0'
+	jr Z, _command_bin_to_hex_is_zero
+	; Value in not 0
+	;push AF
+	;ld A,E
+	;or D
+	;ld E,A
+	;pop AF
+	set 0,E
+_command_bin_to_hex_is_zero:
+	;sra D					; shift D right
+	
+	;jr C, command_bin_to_hex_end
+	ld A,(HL)
+	bit 7,A					; Test bit 7 on A
+	jr NZ, _command_bin_to_hex_end		; 
+	sla E
+	inc HL
+
+	jr _command_bin_to_hex_loop
+
+_command_bin_to_hex_end:
+	ld C,E
+	call bin_to_hex_8
+	ld A,H
+	call print_char
+	ld A,L
+	call print_char
+	call new_line
+
+	ret
+
+
+	
+	
+; ---------------------------------------------
+; hex_to_bin_4
+; Converts a single hex digit into binary
+; input A
+; output E
+; --------------------------------------------
+hex_to_bin_4:
+	ld IX, hex_digits
+	ld B, 16
+	ld E, 0
+_hex_to_bin_4_loop:
+	ld C, (IX)
+	res 7, C
+	CP C
+	jr Z, _end_hex_to_bin_4_loop
+	inc IX
+	inc E
+	djnz _hex_to_bin_4_loop
+_end_hex_to_bin_4_loop:
+	ret
+
+; -------------------------------------------
+; bin_to_hex_8
+; input: C
+; ouput: HL
+; -------------------------------------------
+bin_to_hex_8:
+	ld A, C
+	rra					; rotate right 4 times
+	rra
+	rra
+	rra
+	call _bin_to_hex_8_conv
+	ld H, L
+	ld A, C
+_bin_to_hex_8_conv:
+	and $0F					; Mask the 4 most significant bits
+	add A, $90				; add 0x90 to A
+	daa					; C flag and H flag should be 0
+						; Higher value is 0x9
+						; If lower value 0-9 adds 0
+						; If lower value A-F adds 0x66
+	adc A, $40
+	daa
+	ld L, A
+	ret
+
+
+; -------------------------------------------
+; hex_to_bin_8
+; Input: HL start of 2 byte hex string
+; Output A
+; -------------------------------------------
+hex_to_bin_8:
+	ld A,(HL)
+	call hex_to_bin_4			; Convert the first digit
+	rlc E					; Rotate result left 4 times
+	rlc E
+	rlc E
+	rlc E
+	ld D,0
+	push DE					; Save for later
+	inc HL
+	ld A,(HL)
+	res 7,A					; Reset bit 7 of A to 0
+	call hex_to_bin_4			; Convert the second digit
+	ld A,E
+	pop DE
+	add A,E					; The two 4 bit words are added
+	ret
+
+; -------------------------------------------
+; hex_to_bin_16
+; Input: HL start of 2 byte hex string
+; Output DE
+; -------------------------------------------
+hex_to_bin_16:
+	ld A,(HL)				; First digit
+	call hex_to_bin_4			; Convert
+	rlc E					; Rotate result left 4 times
+	rlc E
+	rlc E
+	rlc E
+	ld D,E
+	push DE					; Save for later
+	inc HL
+	ld A,(HL)				; Second digit
+	call hex_to_bin_4			; Convert
+	ld A,E
+	pop DE
+	add A,D					; The two 4 bit words are added
+	ld D,A
+	push DE
+	inc HL
+	ld A,(HL)				; Third digit
+	call hex_to_bin_4			; Convert
+	rlc E					; Rotate result left 4 times
+	rlc E
+	rlc E
+	rlc E
+	ld A,E
+	pop DE
+	ld E,A
+	push DE
+	inc HL
+	ld A, (HL)				; Fourth and last digit
+	res 7, A				; Reset the end of string bit
+	call hex_to_bin_4			; Convert
+	ld A,E
+	pop DE
+	add A,E
+	ld E,A					; We have the filnal result
+	ret
+
+
+; -------------------------
+; delay subroutine
+; Number of loops = BC x DE
+; My first subroutine :)
+; -------------------------
+delay:
+	ld DE, 0100h				; Load 0100H into DE
+_delay_inner_loop:
+	dec DE					; Decrease DE
+	ld A, D					; load D into A
+	or E					; A or E (If any one bit is set the result will not be zero)
+	jp nz, _delay_inner_loop		; Jump back to :delay_inner_loop if z not set (A=0)
+	dec BC
+	ld A,B
+	or C
+	jp nz, delay
+	ret
+
+; ---------------------------------------------------------------------;
+;                              Interupts                               ;
+; ---------------------------------------------------------------------;
+
+; Empty interup subroutine placeholders
+ISR_1:
+	nop
+	ret
+ISR_2:
+	nop
+	ret
+ISR_3:
+	nop
+	ret
+ISR_4:
+	nop
+	ret
+ISR_5:
+	nop
+	ret
+ISR_6:
+	nop
+	ret
+ISR_7:
+	nop
+	ret
+
+
+; ----------------------------------------------------------------------
+;                     External subroutines                             ;
+; ----------------------------------------------------------------------
+
+#include "term.ass"
+#include "string.ass"
+#include "uart.ass"
+
+; ----------------------------------------------------------------------
+;                     strings and static data                          ;
+; ----------------------------------------------------------------------
+
+command_prompt			defm	"#"+$80
+hex_digits			defm	"0123456789ABCDEF"+$80
+
+str_wellcome_1			defm	"Wellcome to the Messy80"+$80
+str_wellcome_2			defm	"Type h for help"+$80
+str_true			defm	"true"+$80
+str_false			defm	"false"+$80
+str_success			defm	"Successfuly returned"+$80
+str_error_unknown_cmd		defm	"Unknown command"+$80
+str_help_1			defm	"Messy80 Help" + $80
+str_help_2			defm	"List of commands:" + $80
+str_help_3			defm	"| Command    | Description             | Example usage     |" + $80
+str_help_4			defm	"|----------------------------------------------------------|" + $80
+str_help_5			defm	"| ra         | read address            | ra 80FF           |" + $80
+str_help_6			defm	"| wa         | write address,value     | ra 80FF,FF        |" + $80
+str_help_7			defm	"| rio        | read io                 | rio 05            |" + $80
+str_help_8			defm	"| wio        | write io, value         | wio 04,0C         |" + $80
+str_help_9			defm	"| ca         | call address            | ca 8000           |" + $80
+str_help_10			defm	"| b2h        | binany to hexadecimal   | b2h 00001100      |" + $80
+str_help_11			defm	"| clear      | Clears the terminal     | clear             |" + $80
+
+
+
+; -----------------------------------
+; monitor commands
+; -----------------------------------
+cmd_help			defm	"h"+$80
+cmd_hex2char_8			defm	"h2c8"+$80
+cmd_hex2char_16			defm	"h2c16"+$80
+cmd_read_address		defm	"ra"+$80
+cmd_write_address		defm	"wa"+$80
+cmd_io_out			defm	"wio"+$80
+cmd_io_in			defm	"rio"+$80
+cmd_call_address		defm	"ca"+$80
+cmd_bin2hex			defm	"b2h"+$80
+cmd_clear			defm	"clear"+$80
+
+#end

@@ -1,0 +1,116 @@
+; ---------------------------------------------
+; string_len
+; input: HL Points to the string
+; output: A The string length
+; ---------------------------------------------
+string_len:
+	push HL
+	ld A,0					; Reset A
+	ld B,80					; 80 is the maximum length of a string
+_string_len_loop:
+	inc A
+	ld C,(HL)
+	bit 7,C
+	jr NZ, _string_len_loop_end
+	inc HL
+	djnz _string_len_loop			; dec B; if b!=0 jump
+_string_len_loop_end:
+	pop HL
+	ret
+
+; ---------------------------------------------
+; string_copy
+; input: HL Points to the source string
+; input: DE Points to the target string B
+; ---------------------------------------------
+string_copy:
+	push HL
+	push DE
+	call string_len
+	; The folowing have already been set.
+	;ld HL, string_source
+	;ld DE, string_target
+	ld B, 0
+	ld C, A					; load the string length into C
+	ldir
+	pop DE
+	pop HL
+	ret
+
+
+; --------------------------------------
+; string_compare
+; String A is pointed to by IX
+; String B is pointed to by IY
+; If compare is true the Z flag is set
+; --------------------------------------
+string_compare:
+	push IX
+	push IY
+_string_compare_loop:
+	ld A, (IX)
+	ld B, (IY)
+	cp B
+	jr NZ, _string_compare_false
+	bit 7,A
+	jr NZ, _string_compare_true		; End of string
+	inc IX
+	inc IY
+	jr _string_compare_loop
+_string_compare_true:
+	cp A					; Set zero flag
+	jr _string_compare_end
+_string_compare_false:
+	or 1					; Reset zero flag
+_string_compare_end:
+	pop IY
+	pop IX
+	ret
+
+; -------------------------------------------
+; split_in_two
+; Subroutine to split a string into 2
+; delimiter Should be in B
+; HL points to the string to be split
+; IX points to target string A
+; IY points to target string B
+; -------------------------------------------
+split_in_two:
+	ld A,(HL)
+	bit 7,A
+	jr Z, _not_end_of_string			; Check if string ends before the delimiter
+	ld (IX),A
+	jr _end_of_string_b
+	
+_not_end_of_string:
+	CP B
+	jr Z, _char_is_delimiter
+	ld (IX),A
+	inc IX
+	inc HL
+	jr split_in_two
+_char_is_delimiter:
+	dec IX
+	ld A,(IX)
+	add A,$80				; End the first string
+	ld (IX),A
+_while_delimiter:
+	inc HL
+	ld A,(HL)
+	cp B
+	jr NZ, _second_string
+	jr _while_delimiter
+_second_string:
+	ld A,(HL)
+	bit 7,A
+	jr NZ, _end_of_string_b
+	ld (IY),A
+	inc IY
+	inc HL
+	jr _second_string
+	
+_end_of_string_b:
+	ld A,(HL)
+	ld (IY),A
+	ret
+

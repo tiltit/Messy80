@@ -1,0 +1,166 @@
+; -------------------------------------
+; print_char
+; Outputs the content of A to the uart
+; -------------------------------------
+; print_char:
+; 	push AF
+; 	out (UART_TX_BUFF),A			; output byte
+; _wait_end_tx:
+; 	IN A,(UART_LINE_STATUS)			; poll for end of transmission
+; 	bit UART_LINE_STATUS_TX_EMPTY,A
+; 	jr Z,_wait_end_tx
+; 	pop AF
+; 	ret
+print_char:
+	push AF
+_wait_tx_ready:
+	IN A,(UART_LINE_STATUS)			; poll for end of transmission
+	bit UART_LINE_STATUS_THRE,A
+	jr Z,_wait_tx_ready
+
+	pop AF
+	out (UART_TX_BUFF),A			; output byte
+	ret
+
+; -------------------------------------
+; get_char_block
+; Reads a char from the uart
+; Blocks the program until a char is 
+; read
+; -------------------------------------
+get_char_block:
+	in A,(UART_LINE_STATUS) 		;  poll receive data ready-bit
+	bit UART_LINE_STATUS_RX_READY,A
+	jr Z,get_char_block
+	in A,(UART_RX_BUFF)
+	ret
+	
+
+; -------------------------------------
+; get_char
+; Reads a char from the uart if one
+; is available. 
+; Deos not block the program
+; -------------------------------------
+get_char:
+	in A,(UART_LINE_STATUS) 		;  poll receive data ready-bit
+	bit UART_LINE_STATUS_RX_READY,A
+	jr Z,_no_input
+	in A,(UART_RX_BUFF)
+	ld B, $FF
+	ret
+_no_input:
+	ld B, 0
+	ret
+	
+; ---------------------------------------
+; new_line
+; prints out \r\n
+; --------------------------------------
+new_line:
+	ld A,$0D				; Load \r into A
+	call print_char				; Print \r
+	ld A,$0A				; Load \n into A
+	call print_char				; Print \n
+	ret
+	
+; ---------------------------------------
+; Print_line
+; HL points to the begining of the string
+; Adds \r\n to the end of the line
+; ---------------------------------------
+print_line:
+	push hl
+_print_line_loop:
+	ld A,(HL)				; Load the char into A
+	bit 7,A					; Test bit 7 on A
+	jr NZ, _line_end			; If bit 7 is set then Z is not 0, jump to line end
+	call print_char				; else print the char in A
+	inc HL					; incremant hl to point to the next char
+	jp _print_line_loop			; start over for the next char
+_line_end:					; This is the last char
+	res 7,A					; Reset bit 7 of A to 0
+	call print_char				; Print A
+	ld A,$0D				; Load \r into A
+	call print_char				; Print \r
+	ld A,$0A				; Load \n into A
+	call print_char				; Print \n
+	pop hl
+	ret
+
+; ---------------------------------------
+; get_line
+; HL points to area in memory where the
+; string will be stored
+; ---------------------------------------
+; read_line:
+
+; 	ret
+
+	
+; ---------------------------------------
+; Print_string
+; HL points to the begining of the string
+; Same as above without \r\n
+; ---------------------------------------
+print_string:
+	ld A,(HL)				; Load the char into A
+	bit 7,A					; Test bit 7 on A
+	jr NZ, _print_string_line_end		; If bit 7 is set then Z is not 0, jump to line end
+	call print_char				; else print the char in A
+	inc HL					; incremant hl to point to the next char
+	jp print_string				; start over for the next char
+_print_string_line_end:						; This is the last char
+	res 7,A					; Reset bit 7 of A to 0
+	call print_char				; Print A
+	ret
+	
+; --------------------------------------
+; print_command_prompt
+; --------------------------------------
+print_command_prompt:
+	ld A,$0D				; Load \r into A
+	call print_char				; Print \r
+	ld A,$0A				; Load \n into A
+	call print_char				; Print \n
+	ld A,'#'				; Load '#' into A
+	call print_char				; Print \n
+	ret
+
+; --------------------------------------
+; send_ansi_code
+; input: HL points to code string
+; ex: ld HL, str_term_color_BW
+; call send_ansi_code
+; --------------------------------------
+send_ansi_code:
+	push AF
+	ld A,1BH				; Send escape
+	call print_char
+	call print_string			; Send the string pointed to by HL
+	pop AF
+	ret
+
+clear_screen:
+	;Moove cursor upper left corner
+	ld HL, str_term_reset_cursor
+	call send_ansi_code
+
+	; Clear entire screen
+	ld HL, str_term_clear_screen		; [2J
+	call send_ansi_code
+	ret
+
+; ----------------------------------------------------------------------
+;                     strings and static data                          ;
+; ----------------------------------------------------------------------
+
+str_term_reset_cursor		defm	"[H" + $80
+str_term_clear_screen		defm	"[2J" + $80
+
+str_term_color_BW		defm	"[30;47m" + $80
+str_term_color_default		defm	"[39;49m" + $80
+str_term_underline		defm	"[4m" + $80
+str_term_underline_off		defm	"[24m" + $80
+
+str_term_backpace_sequence	defm	1B5B44201B5BC4h

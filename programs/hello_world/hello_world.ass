@@ -1,0 +1,25 @@
+; ---------------------------------------------------------------------;
+; Outputs the Hex value of any byte received by the uart               ;
+; ---------------------------------------------------------------------;
+; -s -l 10 /home/oliver/workspace/z80/messy80/programs/hello_world/hello_world.txt
+
+#include "labels.ass"
+
+#target     rom                 ; declare target file format
+
+#code       $8400,$4000			; declare main code segment
+
+hello_world:
+
+	ld HL, str_hello_world
+	call print_string
+	call new_line
+
+_ram_prg_test_end:
+
+	ret
+
+str_hello_world	defm	"Hello World!"+$80
+
+#end
+

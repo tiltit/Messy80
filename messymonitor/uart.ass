@@ -1,0 +1,78 @@
+UART_BASE			equ		0H
+
+UART_RX_BUFF			equ		UART_BASE + 0
+UART_TX_BUFF			equ		UART_BASE + 0
+UART_IER			equ		UART_BASE + 1 ; 0001
+UART_INT_ID			equ		UART_BASE + 2 ; 0010
+UART_FCR			equ		UART_BASE + 2 ; 0010
+UART_LCR			equ		UART_BASE + 3 ; 0011
+UART_MCR			equ		UART_BASE + 4 ; 0100
+UART_MCR_DTR			equ		0
+UART_MCR_RTS			equ		1
+UART_MCR_OUT1			equ		2
+UART_MCR_OUT2			equ		3
+
+UART_LINE_STATUS		equ		UART_BASE + 5 ; 0101
+UART_LINE_STATUS_RX_READY	equ		0
+UART_LINE_STATUS_THRE		equ 		5             ;Transmitter Holding Register Empty (THRE)
+UART_LINE_STATUS_TX_EMPTY	equ 		6
+
+
+UART_MODEM_STATUS		equ		UART_BASE + 6
+UART_SCRATCH			equ		UART_BASE + 7
+UART_DIVISOR_LSB		equ		UART_BASE + 0
+UART_DIVISOR_MSB		equ		UART_BASE + 1
+
+
+
+	
+; -------------------------------------------------------------------- ;
+;                           setup_routines                             ;
+; -------------------------------------------------------------------- ;
+
+setup_uart:
+	ld A,80H					; DLE on
+	out (UART_LCR),A			; activate dlab bit to access to divisor registers
+
+	ld A,3						; 38400 baud
+	;ld A,12						; 9600 baud
+	out (UART_DIVISOR_LSB),A	; LSB of divisor
+
+	
+	ld A,0						; MSB of divisor
+	out (UART_DIVISOR_MSB),A
+
+	ld A,03H					; 8 data bits, no parity, one stop bit (8N1)
+	out (UART_LCR),A
+	
+	ld A,11000111b
+	out (UART_FCR),A			; Enable fifo 14 byte trigger level
+	
+	;ld A, 00000001b				; Enable received data available interupt
+	ld A, 00000000b				; Disable all interupts
+	out (UART_IER), A
+	ret
+	
+	
+; ---------------------------------------------------------------------;
+;                              Interupts                               ;
+; ---------------------------------------------------------------------;
+
+; -------------------------
+; UART Byte ready interupt example
+; -------------------------
+int_byte_ready:
+	ex AF,AF'
+	exx
+	
+	in A,(UART_LINE_STATUS) 	;  poll receive data ready-bit
+	bit UART_LINE_STATUS_RX_READY,A
+	jr Z,_int_byte_ready_no_input
+	in A,(UART_RX_BUFF)
+	call print_char
+	
+_int_byte_ready_no_input:
+	ex AF,AF'
+	exx
+	ei
+	ret

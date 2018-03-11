@@ -1,0 +1,50 @@
+; ---------------------------------------------------------------------;
+; Outputs the Hex value of any byte received by the uart               ;
+; ---------------------------------------------------------------------;
+; -s -l 10 /home/oliver/workspace/z80/messy80/programs/read_key/read_key.txt
+; -s /home/oliver/workspace/z80/messy80/programs/read_key/read_key.txt
+
+#include "labels.ass"
+
+#target     rom                 ; declare target file format
+
+#code       $8400,$4000			; declare main code segment
+
+read_key:
+
+	ld HL, intro_text
+	call print_string
+	call new_line
+
+	in A, (UART_MCR)			; UART Flow controll Accept input
+	set UART_MCR_RTS, A
+	out (UART_MCR),A
+
+_read_key_loop
+	call get_char_block
+	push AF
+	ld C,A
+
+	call bin_to_hex_8
+
+	ld A,H
+	call print_char
+
+	ld A,L
+	call print_char
+
+	call new_line
+	pop AF
+
+	cp 71H				; 71H is 'q'
+
+	jr NZ,_read_key_loop	; if A is not 'q' loop
+
+_read_key_end:
+
+	ret
+
+intro_text	defm	"Hit 'q' to quit."+$80
+
+#end
+
