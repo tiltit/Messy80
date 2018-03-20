@@ -12,7 +12,7 @@ STACK_BASE			equ		$FFFF
 
 #target     rom                 ; declare target file format
 
-#data   $8000,$200
+#data   $8000,$400
 
 ; Interupt jump table
 int_7				data	2	; 0
@@ -294,8 +294,16 @@ _case_clear:					; Clear Screen
 	ld IX, command_line
 	ld IY, cmd_clear
 	call string_compare
-	jr NZ,	_case_default
+	jr NZ,	_case_dump
 	call clear_screen
+	jp _proccess_command_end
+_case_dump:
+	ld IX, split_a
+	ld IY, cmd_dump
+	call string_compare
+	jr NZ,	_case_default
+	ld HL, split_b
+	call command_dump
 	jp _proccess_command_end
 
 _case_default:					; No command found
@@ -350,6 +358,8 @@ command_help:
 	ld HL,str_help_10
 	call print_line
 	ld HL,str_help_11
+	call print_line
+	ld HL,str_help_12
 	call print_line
 
 
@@ -534,7 +544,108 @@ _command_bin_to_hex_end:
 
 	ret
 
+;-------------------------------------------------------
+; Command dump
+;-------------------------------------------------------
+command_dump:
+	ld	DE, string_a
+	call	string_copy
+	
+	ld	HL, string_a
+	ld	IX, split_a
+	ld	IY, split_b
+	ld	B, ','				; This is the delimiter
+	call	split_in_two
+	ld	HL, split_a
+	call	hex_to_bin_16			; Output is DE
+	push	DE					; Save result for later
+	ld	HL, split_b
+	call	hex_to_bin_16			; Result is in DE
+	pop	HL					; Reload result
+	;push	DE
 
+	; Address is in HL
+	; Size is in DE
+
+	push HL
+	ld C,H
+	call bin_to_hex_8
+	ld A,H
+	call print_char
+	ld A,L
+	call print_char
+	
+	pop HL
+	push HL
+
+	ld C,L
+	call bin_to_hex_8
+	ld A,H
+	call print_char
+	ld A,L
+	call print_char
+
+
+	ld A,':'
+	call print_char
+	ld A,' '
+	call print_char
+	pop HL
+
+	ld B,16
+_command_dump_loop:
+
+	ld C,(HL)
+	push HL
+	call bin_to_hex_8
+	ld A,H
+	call print_char
+	ld A,L
+	call print_char
+
+	ld A,' '
+	call print_char
+
+	pop HL
+	inc HL
+
+
+	dec B
+	jp NZ,_command_dump_no_newline
+	ld B,16
+	call new_line
+
+
+	push HL
+	ld C,H
+	call bin_to_hex_8
+	ld A,H
+	call print_char
+	ld A,L
+	call print_char
+	pop HL
+	push HL
+	ld C,L
+	call bin_to_hex_8
+	ld A,H
+	call print_char
+	ld A,L
+	call print_char
+	ld A,':'
+	call print_char
+	ld A,' '
+	call print_char
+	pop HL
+
+_command_dump_no_newline:
+
+	dec DE
+	ld A,D
+	or E
+	jp NZ,_command_dump_loop
+
+	call new_line
+	ret
 	
 	
 ; ---------------------------------------------
@@ -724,12 +835,13 @@ str_help_2			defm	"List of commands:" + $80
 str_help_3			defm	"| Command    | Description             | Example usage     |" + $80
 str_help_4			defm	"|----------------------------------------------------------|" + $80
 str_help_5			defm	"| ra         | read address            | ra 80FF           |" + $80
-str_help_6			defm	"| wa         | write address,value     | ra 80FF,FF        |" + $80
+str_help_6			defm	"| wa         | write address,value     | wa 80FF,FF        |" + $80
 str_help_7			defm	"| rio        | read io                 | rio 05            |" + $80
 str_help_8			defm	"| wio        | write io, value         | wio 04,0C         |" + $80
-str_help_9			defm	"| ca         | call address            | ca 8000           |" + $80
+str_help_9			defm	"| ca         | call address            | ca 8400           |" + $80
 str_help_10			defm	"| b2h        | binany to hexadecimal   | b2h 00001100      |" + $80
 str_help_11			defm	"| clear      | Clears the terminal     | clear             |" + $80
+str_help_12			defm	"| dump       | Dump address,length     | dump  8400,0040   |" + $80
 
 
 
@@ -746,5 +858,6 @@ cmd_io_in			defm	"rio"+$80
 cmd_call_address		defm	"ca"+$80
 cmd_bin2hex			defm	"b2h"+$80
 cmd_clear			defm	"clear"+$80
+cmd_dump			defm	"dump"+$80
 
 #end
